@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.sortwise</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__SCRIPT__</string>
+        <string>--move</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>14400</integer>
+    <key>StandardOutPath</key>
+    <string>/tmp/sortwise.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/sortwise.stderr.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
