@@ -33,10 +33,16 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var diskItems: [DiskItem] = []
     var diskScanInProgress = false
 
+    // Trash
+    var trashItem: NSMenuItem!
+    let trashItemTag = 9100
+
     let configURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/sortwise/config.json")
     let logURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".config/sortwise/last-run.json")
+    let diskHistoryURL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent(".config/sortwise/disk-history.json")
     let cliPath: String = {
         // Check common pipx locations, then fall back to PATH lookup
         let home = FileManager.default.homeDirectoryForCurrentUser.path
@@ -75,6 +81,8 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
 
+        let needsOnboarding = !FileManager.default.fileExists(atPath: configURL.path)
+
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = statusItem.button {
             if let img = NSImage(systemSymbolName: "folder.badge.gearshape", accessibilityDescription: "Sortwise") {
@@ -83,6 +91,14 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
 
+        if needsOnboarding {
+            showOnboarding()
+        } else {
+            startApp()
+        }
+    }
+
+    func startApp() {
         buildMenu()
         statusItem.menu = statusMenu
         refreshStatus()
@@ -92,6 +108,136 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self?.checkAutoTidy()
         }
     }
+
+    // MARK: - Onboarding
+
+    var onboardingWindow: NSWindow?
+
+    func showOnboarding() {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 340),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Welcome to Sortwise"
+        window.center()
+        window.isReleasedWhenClosed = false
+        onboardingWindow = window
+
+        let contentView = NSView(frame: window.contentView!.bounds)
+        contentView.autoresizingMask = [.width, .height]
+        window.contentView = contentView
+
+        // Welcome label
+        let welcome = NSTextField(labelWithString: "Sortwise organizes your files automatically.")
+        welcome.font = .systemFont(ofSize: 15, weight: .medium)
+        welcome.frame = NSRect(x: 30, y: 280, width: 360, height: 30)
+        contentView.addSubview(welcome)
+
+        // API Key section
+        let apiLabel = NSTextField(labelWithString: "Anthropic API Key (optional — enables AI classification):")
+        apiLabel.font = .systemFont(ofSize: 12)
+        apiLabel.frame = NSRect(x: 30, y: 245, width: 360, height: 20)
+        contentView.addSubview(apiLabel)
+
+        let apiField = NSSecureTextField(frame: NSRect(x: 30, y: 215, width: 360, height: 24))
+        apiField.placeholderString = "sk-ant-..."
+        contentView.addSubview(apiField)
+
+        let skipNote = NSTextField(labelWithString: "Without an API key, files are sorted by extension (free mode).")
+        skipNote.font = .systemFont(ofSize: 11)
+        skipNote.textColor = .secondaryLabelColor
+        skipNote.frame = NSRect(x: 30, y: 190, width: 360, height: 18)
+        contentView.addSubview(skipNote)
+
+        // Folders section
+        let foldersLabel = NSTextField(labelWithString: "Which folders should Sortwise watch?")
+        foldersLabel.font = .systemFont(ofSize: 13, weight: .medium)
+        foldersLabel.frame = NSRect(x: 30, y: 155, width: 360, height: 20)
+        contentView.addSubview(foldersLabel)
+
+        let downloadsCheck = NSButton(checkboxWithTitle: "Downloads", target: nil, action: nil)
+        downloadsCheck.frame = NSRect(x: 30, y: 128, width: 200, height: 20)
+        downloadsCheck.state = .on
+        contentView.addSubview(downloadsCheck)
+
+        let documentsCheck = NSButton(checkboxWithTitle: "Documents", target: nil, action: nil)
+        documentsCheck.frame = NSRect(x: 30, y: 105, width: 200, height: 20)
+        documentsCheck.state = .off
+        contentView.addSubview(documentsCheck)
+
+        let desktopCheck = NSButton(checkboxWithTitle: "Desktop", target: nil, action: nil)
+        desktopCheck.frame = NSRect(x: 30, y: 82, width: 200, height: 20)
+        desktopCheck.state = .off
+        contentView.addSubview(desktopCheck)
+
+        // Done button
+        let doneButton = NSButton(title: "Get Started", target: nil, action: nil)
+        doneButton.bezelStyle = .rounded
+        doneButton.keyEquivalent = "\r"
+        doneButton.frame = NSRect(x: 290, y: 25, width: 100, height: 32)
+        contentView.addSubview(doneButton)
+
+        // Wire up done button
+        doneButton.target = self
+        doneButton.action = #selector(onboardingDone(_:))
+
+        // Store references via representedObject
+        doneButton.tag = 1
+        apiField.tag = 10
+        downloadsCheck.tag = 20
+        documentsCheck.tag = 21
+        desktopCheck.tag = 22
+
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc func onboardingDone(_ sender: NSButton) {
+        guard let window = onboardingWindow,
+              let contentView = window.contentView else { return }
+
+        // Extract values by tag
+        let apiKey = (contentView.viewWithTag(10) as? NSSecureTextField)?.stringValue ?? ""
+        let downloads = (contentView.viewWithTag(20) as? NSButton)?.state == .on
+        let documents = (contentView.viewWithTag(21) as? NSButton)?.state == .on
+        let desktop = (contentView.viewWithTag(22) as? NSButton)?.state == .on
+
+        // Build config
+        var cfg: [String: Any] = [
+            "watched_dirs": [
+                "Downloads": downloads,
+                "Documents": documents,
+                "Desktop": desktop,
+            ],
+            "auto_enabled": true,
+        ]
+
+        if !apiKey.isEmpty {
+            cfg["api_key"] = apiKey
+            cfg["use_ai"] = true
+        } else {
+            cfg["use_ai"] = false
+        }
+
+        // Ensure config directory exists
+        let configDir = configURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: configDir, withIntermediateDirectories: true)
+
+        // Write config
+        if let data = try? JSONSerialization.data(withJSONObject: cfg, options: .prettyPrinted) {
+            try? data.write(to: configURL)
+            // Set restrictive permissions
+            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: configURL.path)
+        }
+
+        window.close()
+        onboardingWindow = nil
+        startApp()
+    }
+
+    // MARK: - Menu
 
     func buildMenu() {
         statusMenu = NSMenu()
@@ -127,6 +273,12 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         diskMenuItem.submenu = diskSubmenu
         // We won't use a submenu — we'll insert items directly into the main menu
         // after diskHeaderItem. We track insertion with a tag range.
+
+        // Trash size
+        trashItem = NSMenuItem(title: "🗑️ Trash: scanning...", action: #selector(openTrash), keyEquivalent: "")
+        trashItem.target = self
+        trashItem.tag = trashItemTag
+        statusMenu.addItem(trashItem)
 
         statusMenu.addItem(.separator())
 
@@ -186,6 +338,7 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         refreshStatus()
         scanDisk()
+        updateTrashItem()
     }
 
     // MARK: - Disk Usage
@@ -315,11 +468,19 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             statusMenu.removeItem(old)
         }
 
+        // Record daily snapshot
+        let freeDisk = totalDisk - usedDisk
+        recordDiskSnapshot(usedBytes: usedDisk, freeBytes: freeDisk)
+
         // Update header
         let usedGB = String(format: "%.0f", Double(usedDisk) / 1_000_000_000)
         let totalGB = String(format: "%.0f", Double(totalDisk) / 1_000_000_000)
         let pct = totalDisk > 0 ? Int(Double(usedDisk) / Double(totalDisk) * 100) : 0
-        diskHeaderItem.title = "💾 \(usedGB) / \(totalGB) GB used (\(pct)%)"
+        var headerText = "💾 \(usedGB) / \(totalGB) GB used (\(pct)%)"
+        if let trend = monthlyTrendString() {
+            headerText += " · \(trend)"
+        }
+        diskHeaderItem.title = headerText
 
         let headerIndex = statusMenu.index(of: diskHeaderItem)
         guard headerIndex != -1 else { return }
@@ -431,6 +592,141 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc func revealDiskItem(_ sender: NSMenuItem) {
         guard let url = sender.representedObject as? URL else { return }
         NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    // MARK: - Storage Trends
+
+    func recordDiskSnapshot(usedBytes: Int64, freeBytes: Int64) {
+        let today = {
+            let f = DateFormatter()
+            f.dateFormat = "yyyy-MM-dd"
+            return f.string(from: Date())
+        }()
+
+        var snapshots = loadDiskHistory()
+
+        // Skip if today already recorded
+        if snapshots.last?["date"] as? String == today { return }
+
+        snapshots.append([
+            "date": today,
+            "used_bytes": usedBytes,
+            "free_bytes": freeBytes,
+        ] as [String: Any])
+
+        // Cap at 90 days
+        if snapshots.count > 90 {
+            snapshots = Array(snapshots.suffix(90))
+        }
+
+        let history: [String: Any] = ["snapshots": snapshots]
+        if let data = try? JSONSerialization.data(withJSONObject: history, options: .prettyPrinted) {
+            try? data.write(to: diskHistoryURL)
+        }
+    }
+
+    func loadDiskHistory() -> [[String: Any]] {
+        guard let data = try? Data(contentsOf: diskHistoryURL),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let snapshots = obj["snapshots"] as? [[String: Any]] else {
+            return []
+        }
+        return snapshots
+    }
+
+    func monthlyTrendString() -> String? {
+        let snapshots = loadDiskHistory()
+        guard snapshots.count >= 2 else { return nil }
+
+        // Find earliest snapshot from this month
+        let today = Date()
+        let cal = Calendar.current
+        let thisMonth = cal.component(.month, from: today)
+        let thisYear = cal.component(.year, from: today)
+        let df = DateFormatter()
+        df.dateFormat = "yyyy-MM-dd"
+
+        var earliestThisMonth: Int64?
+        var latestUsed: Int64?
+
+        for snap in snapshots {
+            guard let dateStr = snap["date"] as? String,
+                  let date = df.date(from: dateStr),
+                  let used = (snap["used_bytes"] as? NSNumber)?.int64Value else { continue }
+
+            if cal.component(.month, from: date) == thisMonth &&
+               cal.component(.year, from: date) == thisYear {
+                if earliestThisMonth == nil { earliestThisMonth = used }
+                latestUsed = used
+            }
+        }
+
+        guard let earliest = earliestThisMonth, let latest = latestUsed, earliest != latest else {
+            return nil
+        }
+
+        let delta = latest - earliest
+        let deltaGB = abs(Double(delta)) / 1_000_000_000
+        let formatted = deltaGB >= 1.0
+            ? String(format: "%.1f GB", deltaGB)
+            : String(format: "%.0f MB", deltaGB * 1000)
+
+        if delta < 0 {
+            return "↓\(formatted) this month"
+        } else {
+            return "↑\(formatted) this month"
+        }
+    }
+
+    // MARK: - Trash
+
+    func getTrashSize() -> Int64 {
+        let trashPath = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash").path
+        return duSize(path: trashPath)
+    }
+
+    func updateTrashItem() {
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self else { return }
+            let size = self.getTrashSize()
+            DispatchQueue.main.async {
+                let gb = Double(size) / 1_000_000_000
+                let display: String
+                if gb >= 1.0 {
+                    display = String(format: "%.1f GB", gb)
+                } else {
+                    let mb = Double(size) / 1_000_000
+                    display = mb >= 1.0 ? String(format: "%.0f MB", mb) : String(format: "%.0f KB", Double(size) / 1_000)
+                }
+
+                self.trashItem.title = "🗑️ Trash: \(display)"
+
+                // Color coding: red >5GB, orange >1GB
+                let color: NSColor
+                if gb >= 5.0 {
+                    color = .systemRed
+                } else if gb >= 1.0 {
+                    color = .systemOrange
+                } else {
+                    color = .labelColor
+                }
+
+                self.trashItem.attributedTitle = NSAttributedString(
+                    string: "🗑️ Trash: \(display)",
+                    attributes: [
+                        .font: NSFont.menuFont(ofSize: 13),
+                        .foregroundColor: color,
+                    ]
+                )
+            }
+        }
+    }
+
+    @objc func openTrash() {
+        let trashURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".Trash")
+        NSWorkspace.shared.open(trashURL)
     }
 
     // MARK: - Tidy Actions

@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    runs-on: macos-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      app_sha256: ${{ steps.sha.outputs.app_sha256 }}
+      tar_sha256: ${{ steps.sha.outputs.tar_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        run: echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Swift app
+        run: |
+          mkdir -p Sortwise.app/Contents/MacOS
+          mkdir -p Sortwise.app/Contents/Resources
+
+          swiftc -parse-as-library -O \
+            -o Sortwise.app/Contents/MacOS/Sortwise \
+            macos-app/Sortwise.swift \
+            -framework Cocoa -framework UserNotifications
+
+          cp macos-app/Info.plist Sortwise.app/Contents/
+
+          # Generate icon
+          python3 macos-app/generate_icon.py || true
+
+          # Create launcher script
+          cat > Sortwise.app/Contents/MacOS/launch <<'LAUNCH'
+          #!/bin/bash
+          DIR="$(cd "$(dirname "$0")" && pwd)"
+          exec "$DIR/Sortwise"
+          LAUNCH
+          chmod +x Sortwise.app/Contents/MacOS/launch
+
+      - name: Package
+        run: zip -r Sortwise.app.zip Sortwise.app
+
+      - name: Compute SHA256
+        id: sha
+        run: |
+          echo "app_sha256=$(shasum -a 256 Sortwise.app.zip | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+          # Download source tarball to get its sha256
+          curl -sL "https://github.com/fabioderiu/sortwise/archive/refs/tags/${{ steps.version.outputs.version }}.tar.gz" -o source.tar.gz
+          echo "tar_sha256=$(shasum -a 256 source.tar.gz | awk '{print $1}')" >> "$GITHUB_OUTPUT"
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: Sortwise ${{ steps.version.outputs.version }}
+          files: Sortwise.app.zip
+          generate_release_notes: true
+
+  update-tap:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout homebrew tap
+        uses: actions/checkout@v4
+        with:
+          repository: fabioderiu/homebrew-sortwise
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
+
+      - name: Update Formula and Cask
+        env:
+          VERSION: ${{ needs.build-and-release.outputs.version }}
+          APP_SHA256: ${{ needs.build-and-release.outputs.app_sha256 }}
+          TAR_SHA256: ${{ needs.build-and-release.outputs.tar_sha256 }}
+        run: |
+          CLEAN_VERSION="${VERSION#v}"
+
+          # Update Formula
+          sed -i "s|url \".*\"|url \"https://github.com/fabioderiu/sortwise/archive/refs/tags/${VERSION}.tar.gz\"|" Formula/sortwise.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${TAR_SHA256}\"|" Formula/sortwise.rb
+
+          # Update Cask
+          sed -i "s|version \".*\"|version \"${CLEAN_VERSION}\"|" Casks/sortwise.rb
+          sed -i "s|sha256 \".*\"|sha256 \"${APP_SHA256}\"|" Casks/sortwise.rb
+
+      - name: Commit and push
+        env:
+          VERSION: ${{ needs.build-and-release.outputs.version }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && exit 0
+          git commit -m "Update to ${VERSION}"
+          git push
