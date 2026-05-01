@@ -90,19 +90,28 @@ def get_managed_folders(target_dir):
     return skip
 
 
-def scan_directory(target_dir):
-    """Return list of top-level items in a directory, skipping managed folders."""
+MIN_AGE_DAYS = 1
+
+
+def scan_directory(target_dir, min_age_days=MIN_AGE_DAYS):
+    """Return list of top-level items in a directory, skipping managed folders
+    and items younger than min_age_days (so freshly downloaded files are left alone)."""
     skip = get_managed_folders(target_dir)
     items = []
     if not target_dir.exists():
         return items
+    now = time.time()
     for entry in target_dir.iterdir():
         if entry.name.startswith("."):
             continue
         if entry.name in skip:
             continue
         stat = entry.stat()
-        age_days = (time.time() - stat.st_mtime) / 86400
+        # Prefer true creation time (st_birthtime on macOS); fall back to mtime.
+        created = getattr(stat, "st_birthtime", stat.st_mtime)
+        age_days = (now - created) / 86400
+        if age_days < min_age_days:
+            continue
         items.append({
             "name": entry.name,
             "is_dir": entry.is_dir(),
